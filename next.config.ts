@@ -1,23 +1,9 @@
 import { withBotId } from "botid/next/config";
 import type { NextConfig } from "next";
 
-const basePath = process.env.IS_DEMO === "1" ? "/demo" : "";
+const basePath = ""; // Always empty for demo mode to avoid routing issues
 
 const nextConfig: NextConfig = {
-  ...(basePath
-    ? {
-        assetPrefix: "/demo-assets",
-        basePath,
-        redirects: async () => [
-          {
-            basePath: false,
-            destination: basePath,
-            permanent: false,
-            source: "/",
-          },
-        ],
-      }
-    : {}),
   cacheComponents: true,
   devIndicators: false,
   env: {
@@ -49,6 +35,10 @@ const nextConfig: NextConfig = {
   },
   poweredByHeader: false,
   reactCompiler: true,
+  // Allow localhost origins for development
+  ...(process.env.IS_DEMO === "1" ? {
+    allowedDevOrigins: ["localhost", "127.0.0.1"],
+  } : {}),
 };
 
 export default withBotId(nextConfig);

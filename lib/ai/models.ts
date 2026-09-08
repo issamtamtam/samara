@@ -1,11 +1,11 @@
-export const DEFAULT_CHAT_MODEL = "moonshotai/kimi-k2.5";
+export const DEFAULT_CHAT_MODEL = "anthropic/claude-3-haiku";
 
 export const titleModel = {
   description: "Fast model for title generation",
   gatewayOrder: ["fireworks", "bedrock"],
-  id: "moonshotai/kimi-k2.5",
-  name: "Kimi K2.5",
-  provider: "moonshotai",
+  id: "anthropic/claude-3-haiku",
+  name: "Claude 3 Haiku",
+  provider: "anthropic",
 };
 
 export type ModelCapabilities = {
@@ -24,6 +24,19 @@ export type ChatModel = {
 };
 
 export const chatModels: ChatModel[] = [
+  // OpenRouter models (primary for customer service)
+  {
+    description: "Fast and capable model for customer service (OpenRouter)",
+    id: "anthropic/claude-3-haiku",
+    name: "Claude 3 Haiku (OpenRouter)",
+    provider: "anthropic",
+  },
+  {
+    description: "Open-source model for customer service (OpenRouter)",
+    id: "meta-llama/llama-3.1-8b-instruct",
+    name: "Llama 3.1 8B (OpenRouter)",
+    provider: "meta-llama",
+  },
   {
     description: "Fast and capable model with tool use",
     gatewayOrder: ["bedrock", "deepinfra"],

@@ -1,6 +1,7 @@
 import { customProvider, gateway } from "ai";
 import { isTestEnvironment } from "../constants";
 import { titleModel } from "./models";
+import { getOpenRouterLanguageModel, DEFAULT_OPENROUTER_MODEL } from "./openrouter-provider";
 
 export const myProvider = isTestEnvironment
   ? (() => {
@@ -18,6 +19,11 @@ export const myProvider = isTestEnvironment
   : null;
 
 export function getLanguageModel(modelId: string) {
+  // For customer service, always use OpenRouter
+  if (modelId.startsWith("anthropic/") || modelId.startsWith("meta-llama/")) {
+    return getOpenRouterLanguageModel(modelId);
+  }
+  
   if (isTestEnvironment && myProvider) {
     return myProvider.languageModel(modelId);
   }

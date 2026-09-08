@@ -215,6 +215,39 @@ export const ReasoningContent = memo(
 
     if (!isOpen) return null;
 
+    // Filter props to only include Streamdown-compatible ones
+    const streamdownProps: Record<string, unknown> = {};
+    const compatibleKeys = new Set([
+      "className",
+      "style",
+      "dir",
+      "mode",
+      "onClick",
+      "onDblClick",
+      "onMouseEnter",
+      "onMouseLeave",
+      "onFocus",
+      "onBlur",
+      "onKeyDown",
+      "onKeyUp",
+      "onKeyPress",
+      "onInput",
+      "onChange",
+      "onScroll",
+      "tabIndex",
+      "role",
+      "aria-label",
+      "aria-hidden",
+      "data-*",
+      "plugins",
+    ]);
+    
+    for (const key in props) {
+      if (compatibleKeys.has(key) || key.startsWith("data-")) {
+        (streamdownProps as Record<string, unknown>)[key] = (props as Record<string, unknown>)[key];
+      }
+    }
+
     return (
       <div
         className={cn(
@@ -227,7 +260,7 @@ export const ReasoningContent = memo(
           ref={scrollRef}
           style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
         >
-          <Streamdown plugins={streamdownPlugins} {...props}>
+          <Streamdown plugins={streamdownPlugins} {...streamdownProps}>
             {children}
           </Streamdown>
         </div>

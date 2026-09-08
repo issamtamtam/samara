@@ -21,7 +21,9 @@ import {
   getModelAvailability,
 } from "@/lib/ai/models";
 import { type RequestHints, systemPrompt } from "@/lib/ai/prompts";
-import { getLanguageModel } from "@/lib/ai/providers";
+import { getOpenRouterLanguageModel, DEFAULT_OPENROUTER_MODEL } from "@/lib/ai/openrouter-provider";
+import { buildSystemPrompt, customerServiceSystemPrompt } from "@/lib/ai/customer-service-prompt";
+import { readKnowledgeFile } from "@/lib/ai/knowledge-base";
 import { createDocument } from "@/lib/ai/tools/create-document";
 import { editDocument } from "@/lib/ai/tools/edit-document";
 import { getWeather } from "@/lib/ai/tools/get-weather";
@@ -52,9 +54,13 @@ export const maxDuration = 60;
 const HEALTH_CHECK_DELAY_MS = 9000;
 
 function isModelStreamActivity(chunk: { type: string }) {
-  return !["start", "start-step", "finish-step", "finish", "raw"].includes(
-    chunk.type
-  );
+  return ![
+    "start",
+    "start-step",
+    "finish-step",
+    "finish",
+    "raw",
+  ].includes(chunk.type);
 }
 
 function getStreamContext() {
@@ -66,6 +72,14 @@ function getStreamContext() {
 }
 
 export { getStreamContext };
+
+// Demo user for when auth fails or in demo mode
+const demoUser = {
+  id: "demo-user",
+  name: "Demo Customer",
+  email: "demo@customer-service.local",
+  type: "guest" as UserType,
+};
 
 export async function POST(request: Request) {
   let requestBody: PostRequestBody;
@@ -83,53 +97,69 @@ export async function POST(request: Request) {
 
     const [botIdResult, session] = await Promise.all([
       checkBotId().catch(() => null),
-      auth(),
+      auth().catch(() => null),
     ]);
+
+    // In demo mode, use mock session if auth returns null
+    const finalSession = session ?? (process.env.IS_DEMO === "1" ? {
+      user: demoUser,
+    } : null);
 
     if (botIdResult?.isBot) {
       return new ChatbotError("forbidden:api").toResponse();
     }
 
-    if (!session?.user) {
+    if (!finalSession?.user) {
       return new ChatbotError("unauthorized:chat").toResponse();
     }
 
-    const chatModel = allowedModelIds.has(selectedChatModel)
-      ? selectedChatModel
-      : DEFAULT_CHAT_MODEL;
+    // For customer service, we always use OpenRouter model
+    const chatModel = DEFAULT_OPENROUTER_MODEL;
 
-    await checkIpRateLimit(ipAddress(request));
+    // Skip rate limiting in demo mode
+    if (process.env.IS_DEMO !== "1") {
+      await checkIpRateLimit(ipAddress(request));
+    }
 
-    const userType: UserType = session.user.type;
+    const userType: UserType = finalSession.user.type;
 
-    const messageCount = await getMessageCountByUserId({
-      differenceInHours: 1,
-      id: session.user.id,
-    });
+    // Skip message count check in demo mode
+    let messageCount = 0;
+    if (process.env.IS_DEMO !== "1") {
+      messageCount = await getMessageCountByUserId({
+        differenceInHours: 1,
+        id: finalSession.user.id,
+      });
 
-    if (messageCount > entitlementsByUserType[userType].maxMessagesPerHour) {
-      return new ChatbotError("rate_limit:chat").toResponse();
+      if (messageCount > entitlementsByUserType[userType].maxMessagesPerHour) {
+        return new ChatbotError("rate_limit:chat").toResponse();
+      }
     }
 
     const isToolApprovalFlow = Boolean(messages);
 
-    const chat = await getChatById({ id });
+    let chat;
     let messagesFromDb: DBMessage[] = [];
     let titlePromise: Promise<string> | null = null;
 
-    if (chat) {
-      if (chat.userId !== session.user.id) {
-        return new ChatbotError("forbidden:chat").toResponse();
+    // Skip database operations in demo mode
+    if (process.env.IS_DEMO !== "1") {
+      chat = await getChatById({ id });
+      
+      if (chat) {
+        if (chat.userId !== finalSession.user.id) {
+          return new ChatbotError("forbidden:chat").toResponse();
+        }
+        messagesFromDb = await getMessagesByChatId({ id });
+      } else if (message?.role === "user") {
+        await saveChat({
+          id,
+          title: "New chat",
+          userId: finalSession.user.id,
+          visibility: selectedVisibilityType,
+        });
+        titlePromise = generateTitleFromUserMessage({ message });
       }
-      messagesFromDb = await getMessagesByChatId({ id });
-    } else if (message?.role === "user") {
-      await saveChat({
-        id,
-        title: "New chat",
-        userId: session.user.id,
-        visibility: selectedVisibilityType,
-      });
-      titlePromise = generateTitleFromUserMessage({ message });
     }
 
     let uiMessages: ChatMessage[];
@@ -179,7 +209,7 @@ export async function POST(request: Request) {
       longitude,
     };
 
-    if (message?.role === "user") {
+    if (message?.role === "user" && process.env.IS_DEMO !== "1") {
       await saveMessages({
         messages: [
           {
@@ -202,9 +232,15 @@ export async function POST(request: Request) {
 
     const modelMessages = await convertToModelMessages(uiMessages);
 
+    // Read knowledge base content
+    const knowledgeContent = await readKnowledgeFile();
+    
+    // Build the system prompt with knowledge base
+    const finalSystemPrompt = buildSystemPrompt(knowledgeContent);
+
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        const modelName = modelConfig?.name ?? chatModel;
+        const modelName = "Claude Haiku (OpenRouter)";
         let hasModelActivity = false;
         let healthCheckTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -266,6 +302,9 @@ export async function POST(request: Request) {
           clearHealthCheckTimer();
         };
 
+        // Use OpenRouter model
+        const openRouterModel = getOpenRouterLanguageModel(chatModel);
+
         const result = streamText({
           activeTools:
             isReasoningModel && !supportsTools
@@ -277,9 +316,9 @@ export async function POST(request: Request) {
                   "updateDocument",
                   "requestSuggestions",
                 ],
-          instructions: systemPrompt({ requestHints, supportsTools }),
+          instructions: finalSystemPrompt,
           messages: modelMessages,
-          model: getLanguageModel(chatModel),
+          model: openRouterModel,
           onAbort() {
             stopWaitingStatus();
           },
@@ -311,19 +350,19 @@ export async function POST(request: Request) {
             createDocument: createDocument({
               dataStream,
               modelId: chatModel,
-              session,
+              session: finalSession as Parameters<typeof createDocument>[0]["session"],
             }),
-            editDocument: editDocument({ dataStream, session }),
+            editDocument: editDocument({ dataStream, session: finalSession as Parameters<typeof editDocument>[0]["session"] }),
             getWeather,
             requestSuggestions: requestSuggestions({
               dataStream,
               modelId: chatModel,
-              session,
+              session: finalSession as Parameters<typeof requestSuggestions>[0]["session"],
             }),
             updateDocument: updateDocument({
               dataStream,
               modelId: chatModel,
-              session,
+              session: finalSession as Parameters<typeof updateDocument>[0]["session"],
             }),
           },
         });
@@ -339,7 +378,9 @@ export async function POST(request: Request) {
           try {
             const title = await titlePromise;
             dataStream.write({ data: title, type: "data-chat-title" });
-            updateChatTitleById({ chatId: id, title });
+            if (process.env.IS_DEMO !== "1") {
+              await updateChatTitleById({ chatId: id, title });
+            }
           } catch {
             /* non-fatal */
           }
@@ -354,28 +395,32 @@ export async function POST(request: Request) {
                 (m) => m.id === finishedMsg.id
               );
               if (existingMsg) {
-                await updateMessage({
-                  id: finishedMsg.id,
-                  parts: finishedMsg.parts,
-                });
+                if (process.env.IS_DEMO !== "1") {
+                  await updateMessage({
+                    id: finishedMsg.id,
+                    parts: finishedMsg.parts,
+                  });
+                }
                 return;
               }
 
-              await saveMessages({
-                messages: [
-                  {
-                    attachments: [],
-                    chatId: id,
-                    createdAt: new Date(),
-                    id: finishedMsg.id,
-                    parts: finishedMsg.parts,
-                    role: finishedMsg.role,
-                  },
-                ],
-              });
+              if (process.env.IS_DEMO !== "1") {
+                await saveMessages({
+                  messages: [
+                    {
+                      attachments: [],
+                      chatId: id,
+                      createdAt: new Date(),
+                      id: finishedMsg.id,
+                      parts: finishedMsg.parts,
+                      role: finishedMsg.role,
+                    },
+                  ],
+                });
+              }
             })
           );
-        } else if (finishedMessages.length > 0) {
+        } else if (finishedMessages.length > 0 && process.env.IS_DEMO !== "1") {
           await saveMessages({
             messages: finishedMessages.map((currentMessage) => ({
               attachments: [],
@@ -397,6 +442,13 @@ export async function POST(request: Request) {
         ) {
           return "AI Gateway requires a valid credit card on file to service requests. Please visit https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%3Fmodal%3Dadd-credit-card to add a card and unlock your free credits.";
         }
+        // Handle OpenRouter specific errors
+        if (
+          error instanceof Error &&
+          error.message?.includes("OpenRouter API error")
+        ) {
+          return "Sorry, I'm having trouble connecting to the service right now. Please try again in a moment.";
+        }
         return "Oops, an error occurred!";
       },
       originalMessages: isToolApprovalFlow ? uiMessages : undefined,
@@ -411,7 +463,9 @@ export async function POST(request: Request) {
           const streamContext = getStreamContext();
           if (streamContext) {
             const streamId = generateId();
-            await createStreamId({ chatId: id, streamId });
+            if (process.env.IS_DEMO !== "1") {
+              await createStreamId({ chatId: id, streamId });
+            }
             await streamContext.createNewResumableStream(
               streamId,
               () => sseStream
@@ -450,6 +504,11 @@ export async function DELETE(request: Request) {
 
   if (!id) {
     return new ChatbotError("bad_request:api").toResponse();
+  }
+
+  // In demo mode, skip delete
+  if (process.env.IS_DEMO === "1") {
+    return Response.json({ success: true });
   }
 
   const session = await auth();

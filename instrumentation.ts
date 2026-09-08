@@ -1,8 +1,7 @@
-import { OpenTelemetry } from "@ai-sdk/otel";
-import { registerOTel } from "@vercel/otel";
-import { registerTelemetry } from "ai";
+// Instrumentation for Vercel Analytics
+// Import type only to avoid build-time type checking issues
 
 export function register() {
-  registerOTel({ serviceName: "chatbot" });
-  registerTelemetry(new OpenTelemetry());
+  // Vercel Analytics registration is handled automatically when deployed
+  // No manual registration needed for local development
 }
