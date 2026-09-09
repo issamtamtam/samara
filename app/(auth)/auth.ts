@@ -15,6 +15,10 @@ declare module "next-auth" {
       type: UserType;
     } & DefaultSession["user"];
   }
+
+  interface User {
+    type?: UserType;
+  }
 }
 
 declare module "next-auth/jwt" {
@@ -39,7 +43,7 @@ export const {
     jwt({ token, user }) {
       if (user) {
         token.id = user.id as string;
-        token.type = user.type;
+        token.type = user.type ?? "regular";
       }
       return token;
     },
